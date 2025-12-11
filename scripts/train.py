@@ -100,9 +100,7 @@ def train_loop(config):
     progress_bar.set_description("Steps")
 
     for epoch in range(config["num_epochs"]):
-        for step, batch in enumerate(train_dataloader):
-            # ... (前向传播和反向传播代码保持不变) ...
-            
+        for step, batch in enumerate(train_dataloader):          
             # 将目标帧编码到隐空间
             latents = vae.encode(batch["target_frame"]).latent_dist.sample() * vae.config.scaling_factor
             
@@ -143,7 +141,7 @@ def train_loop(config):
             optimizer.step()
             optimizer.zero_grad()
             
-            # --- 新增: 记录和打印日志 ---
+            # 记录日志
             current_loss = loss.detach().item()
             
             # 记录 Loss (只在主进程上进行记录和保存，避免重复)
@@ -156,7 +154,6 @@ def train_loop(config):
 
             if accelerator.is_local_main_process and step % 50 == 0:
                 accelerator.print(f"Epoch {epoch}/{config['num_epochs']} | Step {step}/{len(train_dataloader)} | Loss: {current_loss:.4f}")
-            # -----------------------------------
             
     accelerator.wait_for_everyone()
     progress_bar.close()
@@ -164,22 +161,21 @@ def train_loop(config):
     # 6. 保存 ControlNet 权重
     accelerator.wait_for_everyone()
     unwrapped_controlnet = accelerator.unwrap_model(controlnet)
-    
-    # --- 新增: 保存 Loss 记录到 JSON 文件 ---
+
+    # 保存 Loss 记录到 JSON 文件
     if accelerator.is_local_main_process:
         loss_output_path = os.path.join(config["output_dir"], "training_loss.json")
         os.makedirs(config["output_dir"], exist_ok=True)
         with open(loss_output_path, 'w') as f:
             json.dump(all_losses, f)
         accelerator.print(f"Training loss saved to: {loss_output_path}")
-    # -----------------------------------------
+
     
     unwrapped_controlnet.save_pretrained(config["output_dir"])
 if __name__ == '__main__':
-    # 由于改为 float32，显存消耗会翻倍，Batch Size 建议下调
     config = {
         "target_size": 128,
-        "train_batch_size": 4, # 建议下调 Batch Size
+        "train_batch_size": 4, # 内存不足可以下调 Batch Size
         "learning_rate": 1e-5,
         "num_epochs": 100,
         "num_train_timesteps": 1000,
