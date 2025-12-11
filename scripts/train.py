@@ -71,7 +71,7 @@ def train_loop(config):
     text_encoder.requires_grad_(False)
 
     # 初始化 ControlNet 并将其连接到 UNet
-    controlnet = ControlNetModel.from_unet(unet).to(accelerator.device)
+    controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny").to(accelerator.device)
     # 更改 3：移除 ControlNet 上的 dtype=torch.float16
     controlnet.to(accelerator.device)
     controlnet.train()
@@ -176,7 +176,7 @@ if __name__ == '__main__':
     config = {
         "target_size": 128,
         "train_batch_size": 4, # 内存不足可以下调 Batch Size
-        "learning_rate": 1e-5,
+        "learning_rate": 1e-4,
         "num_epochs": 100,
         "num_train_timesteps": 1000,
         "output_dir": "models/controlnet_video_frame"

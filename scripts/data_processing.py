@@ -1,23 +1,30 @@
 import json
 import os
 import cv2
+import numpy as np
 from PIL import Image
 
 # --- 配置 ---
 DATASET_PATH = '/root/autodl-tmp/data/DL-Proj/ssv2_data/ssv2_videos/20bn-something-something-v2'
 OUTPUT_DIR = 'data/processed'
-TARGET_SIZE = 128  # 4090 可以挑战 128x128 [cite: 5]
-# 任务筛选 [cite: 3]
+TARGET_SIZE = 128
+# 任务筛选
 TARGET_TASKS = {
     "move_object": ["Moving something from left to right", "Pushing something from right to left"],
     "drop_object": ["Dropping something onto something", "Letting something fall down"],
     "cover_object": ["Covering something with something", "Putting something on top of something"]
 }
 INPUT_FRAME_INDEX = 1  # 假设使用第1帧作为观测帧
-TARGET_FRAME_OFFSET = 20 # 预测第 21 帧 (1 + 20) [cite: 6]
 
-def extract_frame_pair(video_path, text_prompt):
-    """从视频中提取条件帧和目标帧，并缩放"""
+# 先减小时间偏移量
+TARGET_FRAME_OFFSET = 20  
+
+# Canny 边缘检测阈值（标准值）
+CANNY_LOW_THRESHOLD = 100
+CANNY_HIGH_THRESHOLD = 200
+
+def extract_frame_pair(video_path):
+    """从视频中提取条件帧（Canny 边缘）和目标帧（RGB），并缩放"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened(): return None, None
 
@@ -25,27 +32,43 @@ def extract_frame_pair(video_path, text_prompt):
     
     # 确保视频足够长
     if frame_count < INPUT_FRAME_INDEX + TARGET_FRAME_OFFSET:
+        cap.release()
         return None, None 
 
-    # 提取条件帧 x0
+    # 1. 提取条件帧 x0 (Frame_t)
     cap.set(cv2.CAP_PROP_POS_FRAMES, INPUT_FRAME_INDEX - 1)
     ret_x0, frame_x0 = cap.read()
 
-    # 提取目标帧 y
+    # 2. 提取目标帧 y (Frame_t+Delta_t)
     cap.set(cv2.CAP_PROP_POS_FRAMES, INPUT_FRAME_INDEX + TARGET_FRAME_OFFSET - 1)
     ret_y, frame_y = cap.read()
     
     cap.release()
 
     if ret_x0 and ret_y:
-        # 转换并调整尺寸
-        frame_x0 = cv2.cvtColor(frame_x0, cv2.COLOR_BGR2RGB)
+        # 目标帧 y (Frame_t+Delta_t): RGB 图像
         frame_y = cv2.cvtColor(frame_y, cv2.COLOR_BGR2RGB)
-        
-        frame_x0 = Image.fromarray(frame_x0).resize((TARGET_SIZE, TARGET_SIZE))
         frame_y = Image.fromarray(frame_y).resize((TARGET_SIZE, TARGET_SIZE))
         
-        return frame_x0, frame_y
+        # ***************************************************************
+        # 关键修改 2: 对条件帧 x0 (Frame_t) 进行 Canny 边缘检测
+        # ---------------------------------------------------------------
+        # A. 转换为灰度图
+        gray_x0 = cv2.cvtColor(frame_x0, cv2.COLOR_BGR2GRAY)
+        
+        # B. 计算 Canny 边缘
+        canny_x0 = cv2.Canny(gray_x0, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD)
+        
+        # C. 转换为 RGB (Canny是单通道，但需要存储为3通道的PNG或JPEG，且通常用PIL处理)
+        # 将单通道的 Canny 边缘图（0或255）转为 3 通道的 RGB 图像
+        canny_x0 = cv2.cvtColor(canny_x0, cv2.COLOR_GRAY2BGR)
+        
+        # D. 调整尺寸并转换为 PIL 格式
+        canny_x0 = Image.fromarray(canny_x0).resize((TARGET_SIZE, TARGET_SIZE))
+        # ***************************************************************
+        
+        # 返回 Canny 边缘图作为条件帧，RGB 图像作为目标帧
+        return canny_x0, frame_y
     return None, None
 
 def load_metadata(json_path):
@@ -58,16 +81,14 @@ def process_dataset(train_metadata_path, label_path):
     
     # 1. 加载元数据和标签
     train_data = load_metadata(train_metadata_path)
-    # label_map = load_metadata(label_path) # SSV2 的 template/label 一致，此步可跳过
     
     filtered_data = []
     
     # 2. 筛选数据：只选择目标任务
-    # 将目标任务集合转换为一个易于查找的 set
     allowed_prompts = set()
     for prompts in TARGET_TASKS.values():
         allowed_prompts.update(prompts)
-        
+            
     print(f"开始筛选 {len(train_data)} 个视频，目标动作数: {len(allowed_prompts)}")
     
     for item in train_data:
@@ -76,6 +97,11 @@ def process_dataset(train_metadata_path, label_path):
         
         if prompt in allowed_prompts:
             filtered_data.append((video_id, prompt))
+            
+    # *******************************************************************
+    # 样本数量限制从 300 提高到 1000，以应对低学习率和高难度任务
+    SAMPLE_LIMIT = 1000
+    # *******************************************************************
             
     print(f"筛选后剩余 {len(filtered_data)} 个视频样本。")
     
@@ -86,21 +112,22 @@ def process_dataset(train_metadata_path, label_path):
         video_file = os.path.join(DATASET_PATH, f"{video_id}.webm")
         
         # 检查是否达到样本上限
-        if len(all_data) >= 300: #
+        if len(all_data) >= SAMPLE_LIMIT: 
             break
 
         if not os.path.exists(video_file):
-            # print(f"警告：视频文件 {video_file} 不存在，跳过。")
             continue
             
-        frame_x0, frame_y = extract_frame_pair(video_file, prompt)
+        # 注意：现在 extract_frame_pair 不再需要 text_prompt
+        frame_x0_canny, frame_y_rgb = extract_frame_pair(video_file)
         
-        if frame_x0 and frame_y:
+        if frame_x0_canny and frame_y_rgb:
             # 保存帧
-            x0_path = os.path.join(OUTPUT_DIR, 'train_frames', f"{video_id}_x0.png")
-            y_path = os.path.join(OUTPUT_DIR, 'train_frames', f"{video_id}_y.png")
-            frame_x0.save(x0_path)
-            frame_y.save(y_path)
+            # x0 现在是 Canny 边缘图
+            x0_path = os.path.join(OUTPUT_DIR, 'train_frames', f"{video_id}_x0_canny.png")
+            y_path = os.path.join(OUTPUT_DIR, 'train_frames', f"{video_id}_y_rgb.png")
+            frame_x0_canny.save(x0_path)
+            frame_y_rgb.save(y_path)
             
             all_data.append({
                 "input_frame_path": x0_path,
@@ -112,20 +139,15 @@ def process_dataset(train_metadata_path, label_path):
     with open(os.path.join(OUTPUT_DIR, 'annotations.json'), 'w') as f:
         json.dump(all_data, f, indent=4)
     
-    print(f"数据处理完成，共生成 {len(all_data)} 个样本，annotations.json 已创建。")
+    print(f"数据处理完成，共生成 {len(all_data)} 个样本。")
 
 if __name__ == '__main__':
+    # 确保安装了 opencv-python
+    # pip install opencv-python
+    
     os.makedirs(os.path.join(OUTPUT_DIR, 'train_frames'), exist_ok=True)
     
-    # 请替换为你的实际路径
     TRAIN_META = '/root/autodl-tmp/data/DL-Proj/ssv2_data/somethingV2/something-something-v2-train.json' 
     LABEL_META = '/root/autodl-tmp/data/DL-Proj/ssv2_data/somethingV2/something-something-v2-labels.json' 
     
-    # 运行主函数
     process_dataset(TRAIN_META, LABEL_META)
-    # print("数据处理完成，annotations.json 已创建。")
-    """
-    https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/dataset/AIDataset/Something-Something-V2/20bn-something-something-v2-00
-    https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/dataset/AIDataset/Something-Something-V2/20bn-something-something-v2-01
-    https://softwarecenter.qualcomm.com/api/download/software/dataset/AIDataset/Something-Something-V2/20bn-something-something-download-package-labels.zip
-    """
