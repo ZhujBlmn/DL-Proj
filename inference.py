@@ -16,7 +16,7 @@ from scripts.train import VideoFrameDataset
 # 必须与 train.py 中的配置保持一致
 MODEL_PATH = "models/controlnet_video_frame" # ControlNet权重保存的路径
 BASE_SD_MODEL = "runwayml/stable-diffusion-v1-5"
-TEST_ANNOTATIONS_FILE = "data/processed/annotations.json" # 假设使用训练集的前几项进行测试
+TEST_ANNOTATIONS_FILE = "data/processed/test_annotations.json"
 TARGET_SIZE = 128
 NUM_INFERENCE_STEPS = 50 # 较少的步数，用于快速生成
 OUTPUT_INFERENCE_DIR = "data/inference_results"
@@ -65,7 +65,6 @@ def evaluate(pipe: StableDiffusionControlNetPipeline, test_data: List[Dict]):
     """
     os.makedirs(OUTPUT_INFERENCE_DIR, exist_ok=True)
     
-    # 仅测试前 5 个样本
     test_samples = test_data[:5] 
     
     print(f"Starting inference for {len(test_samples)} samples...")
@@ -74,6 +73,7 @@ def evaluate(pipe: StableDiffusionControlNetPipeline, test_data: List[Dict]):
         for i, item in tqdm(enumerate(test_samples), total=len(test_samples), desc="Inference"):
             # 1. 准备 ControlNet 条件（Frame_t）
             input_frame_path = item["input_frame_path"]
+            target_frame_path = item["target_frame_path"]
             
             # 使用 PIL 加载 ControlNet Condition Image (Frame_t)
             control_image = Image.open(input_frame_path).convert("RGB").resize((TARGET_SIZE, TARGET_SIZE))
@@ -102,6 +102,10 @@ def evaluate(pipe: StableDiffusionControlNetPipeline, test_data: List[Dict]):
             # 保存预测帧 (Frame_t+Delta_t)
             predicted_output_path = os.path.join(OUTPUT_INFERENCE_DIR, f"sample_{i+1}_{item['video_id']}_predicted.png")
             generated_image.save(predicted_output_path)
+
+            true_target_image = Image.open(target_frame_path).convert("RGB").resize((TARGET_SIZE, TARGET_SIZE))
+            true_output_path = os.path.join(OUTPUT_INFERENCE_DIR, f"sample_{i+1}_{item['video_id']}_true_target.png")
+            true_target_image.save(true_output_path)
             
             print(f"-> Saved Input to {input_output_path}")
             print(f"-> Saved Prediction to {predicted_output_path}")
@@ -117,7 +121,7 @@ def main():
         # 使用 train.py 中的 Dataset 类，但只用于加载数据和prompt
         dataset = VideoFrameDataset(TEST_ANNOTATIONS_FILE, TARGET_SIZE)
         
-        # 提取用于推理的数据（需要video_id, input_frame_path, text_prompt）
+        # 提取用于推理的数据
         test_data = []
         with open(TEST_ANNOTATIONS_FILE, 'r') as f:
             raw_data = json.load(f)
@@ -128,12 +132,13 @@ def main():
             test_data.append({
                 "video_id": video_id,
                 "input_frame_path": item["input_frame_path"],
-                "text_prompt": item["text_prompt"]
+                "text_prompt": item["text_prompt"],
+                "target_frame_path": item["target_frame_path"]
             })
             
     except Exception as e:
         print(f"Error loading evaluation data: {e}")
-        print("Please check if data/processed/annotations.json exists and is valid.")
+        print("Please check if data/processed/test_annotations.json exists and is valid.")
         return
 
     # 执行评估

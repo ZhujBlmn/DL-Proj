@@ -3,6 +3,8 @@ import os
 import cv2
 import numpy as np
 from PIL import Image
+from tqdm import tqdm  # <-- 导入 tqdm
+from sklearn.model_selection import train_test_split
 
 # --- 配置 ---
 DATASET_PATH = '/root/autodl-tmp/data/DL-Proj/ssv2_data/ssv2_videos/20bn-something-something-v2'
@@ -14,10 +16,10 @@ TARGET_TASKS = {
     "drop_object": ["Dropping something onto something", "Letting something fall down"],
     "cover_object": ["Covering something with something", "Putting something on top of something"]
 }
-INPUT_FRAME_INDEX = 1  # 假设使用第1帧作为观测帧
+INPUT_FRAME_INDEX = 20  # 假设使用第1帧作为观测帧
 
 # 先减小时间偏移量
-TARGET_FRAME_OFFSET = 20  
+TARGET_FRAME_OFFSET = 1  
 
 # Canny 边缘检测阈值（标准值）
 CANNY_LOW_THRESHOLD = 100
@@ -98,17 +100,17 @@ def process_dataset(train_metadata_path, label_path):
         if prompt in allowed_prompts:
             filtered_data.append((video_id, prompt))
             
-    # *******************************************************************
-    # 样本数量限制从 300 提高到 1000，以应对低学习率和高难度任务
-    SAMPLE_LIMIT = 1000
-    # *******************************************************************
+    SAMPLE_LIMIT = 1e9
+
             
     print(f"筛选后剩余 {len(filtered_data)} 个视频样本。")
     
     all_data = []
     
     # 3. 遍历和提取帧 (限制样本数量)
-    for video_id, prompt in filtered_data:
+    data_iterator = tqdm(filtered_data, desc=f"Processing Frames (Max {SAMPLE_LIMIT})")
+    
+    for video_id, prompt in data_iterator:
         video_file = os.path.join(DATASET_PATH, f"{video_id}.webm")
         
         # 检查是否达到样本上限
@@ -134,16 +136,29 @@ def process_dataset(train_metadata_path, label_path):
                 "target_frame_path": y_path,
                 "text_prompt": prompt
             })
-
-    # 4. 保存最终的标注 JSON
-    with open(os.path.join(OUTPUT_DIR, 'annotations.json'), 'w') as f:
-        json.dump(all_data, f, indent=4)
+        
+        # 实时更新进度条上的样本数
+        data_iterator.set_postfix(saved=len(all_data))
+        
+    # ----------------------------------------------------
+    # 使用 sklearn.model_selection.train_test_split 划分数据
+    train_data, test_data = train_test_split(all_data, test_size=0.1, random_state=42)
     
-    print(f"数据处理完成，共生成 {len(all_data)} 个样本。")
+    # 5. 保存训练集标注 JSON
+    train_annotations_file = os.path.join(OUTPUT_DIR, 'train_annotations.json')
+    with open(train_annotations_file, 'w') as f:
+        json.dump(train_data, f, indent=4)
+    print(f"训练数据处理完成，共生成 {len(train_data)} 个样本。文件保存在: {train_annotations_file}")
+
+    # 6. 保存测试集标注 JSON
+    test_annotations_file = os.path.join(OUTPUT_DIR, 'test_annotations.json')
+    with open(test_annotations_file, 'w') as f:
+        json.dump(test_data, f, indent=4)
+    print(f"测试数据处理完成，共生成 {len(test_data)} 个样本。文件保存在: {test_annotations_file}")
 
 if __name__ == '__main__':
-    # 确保安装了 opencv-python
-    # pip install opencv-python
+    # 确保安装了 opencv-python, scikit-learn, tqdm
+    # pip install opencv-python scikit-learn tqdm
     
     os.makedirs(os.path.join(OUTPUT_DIR, 'train_frames'), exist_ok=True)
     
